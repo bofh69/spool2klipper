@@ -15,26 +15,37 @@ with the field's value.
 
 import asyncio
 import logging
+import os
+import shutil
+import sys
 from typing import Any, Dict, List, Optional, Union
+from pathlib import Path
+
 
 import aiohttp
 from jsonrpc_websocket import Server
+import toml
 
-MOONRAKER_URL = "ws://localhost:7125/websocket"
-SPOOLMAN_URL = "http://localhost:7912/api"
-KLIPPER_SPOOL_SET_MACRO_PREFIX = "_SPOOLMAN_SET_FIELD_"
-KLIPPER_SPOOL_CLEAR_MACRO = "_SPOOLMAN_CLEAR_SPOOL"
+
+PROGNAME = "spool2klipper"
+CFG_DIR = "~/.config/" + PROGNAME
+CFG_FILE = PROGNAME + ".cfg"
 
 
 # pylint: disable=R0903
 class Spool2Klipper:
     """Moonraker agent to send Spoolman's spool info to Klipper"""
 
-    def __init__(self):
-        self.gcode_macros:List[str] = []
-        self.spoolman_url = SPOOLMAN_URL
+    def __init__(self, config: Dict[str, Any]):
+        self.gcode_macros: List[str] = []
         self.http_session = None
         self.moonraker_server = None
+        self.moonraker_url = config[PROGNAME]["moonraker_url"]
+        self.spoolman_url = config[PROGNAME]["spoolman_url"]
+        self.klipper_spool_set_macro_prefix = config[PROGNAME][
+            "klipper_spool_set_macro_prefix"
+        ]
+        self.klipper_spool_clear_macro = config[PROGNAME]["klipper_spool_clear_macro"]
 
     async def _fetch_spool_info(
         self, spool_id: Union[int, None]
@@ -61,7 +72,7 @@ class Spool2Klipper:
         return err_msg
 
     def _has_spoolman_set_macros(self) -> bool:
-        prefix = KLIPPER_SPOOL_SET_MACRO_PREFIX
+        prefix = self.klipper_spool_set_macro_prefix
         for k in self.gcode_macros:
             if k.startswith(prefix):
                 return True
@@ -75,7 +86,7 @@ class Spool2Klipper:
                 spool_data = await self._fetch_spool_info(spool_id)
                 if spool_data is None:
                     logging.info("Spool ID %s not found, clearing fields", spool_id)
-                    await self._run_gcode(KLIPPER_SPOOL_CLEAR_MACRO)
+                    await self._run_gcode(self.klipper_spool_clear_macro)
                 if isinstance(spool_data, Exception):
                     err_msg = self._get_response_error(spool_data)
                     logging.info("Attempt to fetch spool info failed: %s", err_msg)
@@ -84,14 +95,14 @@ class Spool2Klipper:
                     logging.info("Fetched Spool data for ID %s", spool_id)
                     logging.debug("Got data from Spoolman: %s", spool_data)
                     await self._call_klipper_with_data(
-                        KLIPPER_SPOOL_SET_MACRO_PREFIX,
+                        self.klipper_spool_set_macro_prefix,
                         spool_data,
                     )
             else:
                 logging.debug("No spoolman gcode set macros found")
         else:
-            if KLIPPER_SPOOL_CLEAR_MACRO in self.gcode_macros:
-                await self._run_gcode(KLIPPER_SPOOL_CLEAR_MACRO)
+            if self.klipper_spool_clear_macro in self.gcode_macros:
+                await self._run_gcode(self.klipper_spool_clear_macro)
             else:
                 logging.debug("No spoolman gcode clear macro found")
 
@@ -115,11 +126,13 @@ class Spool2Klipper:
 
     async def _run_gcode(self, script):
         logging.info("Run in klipper: '%s'", script)
-        await self.moonraker_server.printer.gcode.script(script=script, _notification=True)
+        await self.moonraker_server.printer.gcode.script(
+            script=script, _notification=True
+        )
 
     async def _routine(self):
         async with aiohttp.ClientSession() as self.http_session:
-            self.moonraker_server = Server(MOONRAKER_URL)
+            self.moonraker_server = Server(self.moonraker_url)
             try:
                 await self.moonraker_server.ws_connect()
 
@@ -129,7 +142,9 @@ class Spool2Klipper:
                 ]
                 logging.debug("Available macros: %s", (self.gcode_macros))
 
-                self.moonraker_server.notify_active_spool_set = self._notify_active_spool_set
+                self.moonraker_server.notify_active_spool_set = (
+                    self._notify_active_spool_set
+                )
 
                 while True:
                     await asyncio.sleep(3600)
@@ -142,6 +157,30 @@ class Spool2Klipper:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(encoding='utf-8', level=logging.DEBUG)
-    spool2klipper = Spool2Klipper()
+    logging.basicConfig(encoding="utf-8", level=logging.DEBUG)
+    config_data = None  # pylint: disable=C0103
+    for path in ["~/" + CFG_FILE, CFG_DIR + "/" + CFG_FILE]:
+        cfg_filename = os.path.expanduser(path)
+        if os.path.exists(cfg_filename):
+            with open(cfg_filename, "r", encoding="utf-8") as fp:
+                config_data = toml.load(fp)
+                break
+
+    if not config_data:
+        print(
+            "WARNING: The config_data file is missing, installing a default version.",
+            file=sys.stderr,
+        )
+        if not os.path.exists(CFG_DIR):
+            cfg_dir = os.path.expanduser(CFG_DIR)
+            print(f"Creating dir {cfg_dir}", file=sys.stderr)
+            Path(cfg_dir).mkdir(parents=True, exist_ok=True)
+        script_dir = os.path.dirname(__file__)
+        from_filename = os.path.join(script_dir, CFG_FILE)
+        to_filename = os.path.join(cfg_dir, CFG_FILE)
+        shutil.copyfile(from_filename, to_filename)
+        print(f"Created {to_filename}, please update it", file=sys.stderr)
+        sys.exit(1)
+
+    spool2klipper = Spool2Klipper(config_data)
     spool2klipper.run()
