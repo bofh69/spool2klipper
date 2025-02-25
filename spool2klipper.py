@@ -46,8 +46,7 @@ class Spool2Klipper:
             "klipper_spool_set_macro_prefix"
         ]
         self.klipper_spool_clear_macro = config[PROGNAME]["klipper_spool_clear_macro"]
-        print("Config data loaded:", config)
-        self.klipper_spool_change = config[PROGNAME]["klipper_spool_change"]
+        self.klipper_spool_done = config[PROGNAME]["klipper_spool_done"]
         self.spoolman_url = config[PROGNAME]["spoolman_url"]
 
     async def _fetch_spool_info(
@@ -102,8 +101,8 @@ class Spool2Klipper:
                         spool_data,
                     )
                     
-                    if self.klipper_spool_change in self.gcode_macros:
-                        await self._run_gcode(self.klipper_spool_change)
+                    if self.klipper_spool_done in self.gcode_macros:
+                        await self._run_gcode(self.klipper_spool_done)
             else:
                 logging.debug("No spoolman gcode set macros found")
         else:
@@ -190,3 +189,4 @@ if __name__ == "__main__":
 
     spool2klipper = Spool2Klipper(config_data)
     spool2klipper.run()
+    
