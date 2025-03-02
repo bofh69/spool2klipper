@@ -38,7 +38,7 @@ The macro will be called with the argument `VALUE=`_fields-value_.
 If the active spool is cleared in Moonraker, this agent will call (if available):
 `_SPOOLMAN_CLEAR_FIELDS`
 
-The whole process will be called in the terminal (if available): 
+After all the macros have been called, _SPOOLMAN_DONE will be called, if available
 `_SPOOLMAN_DONE`
 
 Add gcode macros to Klipper's config to receive and handle the fields you are interested in.
