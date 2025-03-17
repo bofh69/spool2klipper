@@ -67,7 +67,6 @@ gcode:
 description: The data was transferred
 gcode:
     RESPOND TYPE=command MSG="CHANGE FILAMENT"
-  {% endif %}
 
 ```
 
