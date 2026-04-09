@@ -2,7 +2,7 @@
 
 [Unit]
 Description=Starts spool2klipper
-Documentation=https://github.com/bofh69/spool2klipper
+Documentation=https://github.com/psyfiend/spool2klipper
 After=moonraker.service
 Wants=udev.target
 
