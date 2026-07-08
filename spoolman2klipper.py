@@ -23,6 +23,13 @@ PROGNAME = "spoolman2klipper"
 CFG_DIR = "~/.config/" + PROGNAME
 CFG_FILE = PROGNAME + ".cfg"
 DEFAULT_KLIPPER_MACRO = "SPOOLMAN"
+LOG_FILE = PROGNAME + ".log"
+LOG_MARKER_FILES = ("klippy.log", "moonraker.log", "crowsnest.log")
+LOG_DIR_CANDIDATES = (
+    "~/printer_data/logs",
+    "~/klipper_logs",
+    "~/logs",
+)
 
 SPOOL_VARS_DEFAULT: Dict[str, Any] = {
     "spool_id": -1,
@@ -58,7 +65,7 @@ class Spoolman2Klipper:  # pylint: disable=too-many-instance-attributes
         self.server_factory = Server
         self.is_closing = False
         self.macro_variables: Optional[Set[str]] = None
-        self.active_spool_id: Optional[Union[int, str]] = None
+        self.active_spool_id: Optional[str] = None
         self.active_spool_data: Optional[Dict[str, Any]] = None
 
     def extract_spool_variables(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -117,8 +124,12 @@ class Spoolman2Klipper:  # pylint: disable=too-many-instance-attributes
                 )
                 return
 
+        sent_count = 0
+        skipped_variables = []
+        failed_variables = []
         for variable_name, value in variables.items():
             if variable_name not in self.macro_variables:
+                skipped_variables.append(variable_name)
                 logging.debug(
                     "Skipping variable %s; macro %s does not define it",
                     variable_name,
@@ -129,19 +140,40 @@ class Spoolman2Klipper:  # pylint: disable=too-many-instance-attributes
             script = self.format_set_variable_gcode(variable_name, value)
             try:
                 await self._run_gcode(script)
+                sent_count += 1
             except Exception as exc:  # pylint: disable=broad-exception-caught
+                failed_variables.append(variable_name)
                 logging.warning(
                     "Failed to update Klipper variable %s: %s",
                     variable_name,
                     exc,
                 )
 
+        if sent_count == 0:
+            logging.warning(
+                "No Klipper variables were updated for macro %s; expected one of %s, "
+                "detected %s, skipped %s, failed %s",
+                self.klipper_macro,
+                sorted(variables.keys()),
+                sorted(self.macro_variables),
+                sorted(skipped_variables),
+                sorted(failed_variables),
+            )
+        else:
+            logging.info(
+                "Updated %s Klipper variable(s) for macro %s; skipped %s, failed %s",
+                sent_count,
+                self.klipper_macro,
+                len(skipped_variables),
+                len(failed_variables),
+            )
+
     async def notify_active_spool_set(self, params: Dict[str, Any]) -> None:
         """Handle Moonraker's active spool notification payload."""
 
         spool_id = params.get("spool_id")
         logging.info("Moonraker active spool changed to %s", spool_id)
-        self.active_spool_id = spool_id
+        self.active_spool_id = normalize_spool_id(spool_id)
         if spool_id is None:
             self.active_spool_data = None
             logging.info("Clearing Klipper spool variables")
@@ -205,7 +237,7 @@ class Spoolman2Klipper:  # pylint: disable=too-many-instance-attributes
             return
 
         spool_id = payload.get("id")
-        if spool_id != self.active_spool_id:
+        if normalize_spool_id(spool_id) != normalize_spool_id(self.active_spool_id):
             return
 
         event_type = event.get("type")
@@ -272,11 +304,15 @@ class Spoolman2Klipper:  # pylint: disable=too-many-instance-attributes
             )
             status = result.get("status", result)
             macro_state = status.get(macro_key, {})
-            self.macro_variables = set(macro_state.keys())
+            self.macro_variables = {
+                normalize_macro_variable_name(variable_name)
+                for variable_name in macro_state.keys()
+            }
             logging.info(
-                "Detected Klipper macro %s with %s variable(s)",
+                "Detected Klipper macro %s with %s variable(s): %s",
                 self.klipper_macro,
                 len(self.macro_variables),
+                ", ".join(sorted(self.macro_variables)),
             )
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logging.warning(
@@ -455,6 +491,66 @@ class Spoolman2Klipper:  # pylint: disable=too-many-instance-attributes
         )
 
 
+def normalize_macro_variable_name(variable_name: str) -> str:
+    """Convert Klipper storage keys into SET_GCODE_VARIABLE names."""
+
+    if variable_name.startswith("variable_"):
+        return variable_name[len("variable_") :]
+    return variable_name
+
+
+def normalize_spool_id(spool_id: Optional[Union[int, str]]) -> Optional[str]:
+    """Normalize spool IDs from HTTP/websocket payloads for comparisons."""
+
+    if spool_id is None:
+        return None
+    return str(spool_id)
+
+
+def resolve_log_file(configured_log_file: Optional[str] = None) -> str:
+    """Resolve the service log file path into Klipper's visible log directory."""
+
+    if configured_log_file:
+        return os.path.expanduser(configured_log_file)
+
+    for log_dir in LOG_DIR_CANDIDATES:
+        expanded_dir = os.path.expanduser(log_dir)
+        if any(
+            os.path.exists(os.path.join(expanded_dir, marker_file))
+            for marker_file in LOG_MARKER_FILES
+        ):
+            return os.path.join(expanded_dir, LOG_FILE)
+
+    return os.path.join(os.path.expanduser(LOG_DIR_CANDIDATES[0]), LOG_FILE)
+
+
+def configure_logging(log_file: str, stderr: Any = sys.stderr) -> None:
+    """Send timestamped logs to a printer-web-UI-visible file and stderr."""
+
+    log_dir = os.path.dirname(log_file)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+
+    formatter = logging.Formatter(
+        "%(asctime)s %(levelname)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+
+    stream_handler = logging.StreamHandler(stderr)
+    stream_handler.setFormatter(formatter)
+
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+        handler.close()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(stream_handler)
+
+
 def load_config() -> Optional[Dict[str, Any]]:
     """Load user configuration from the supported config locations."""
 
@@ -479,17 +575,21 @@ def load_config() -> Optional[Dict[str, Any]]:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(encoding="utf-8", level=logging.INFO)
     config_data = load_config()
     if not config_data:
+        configure_logging(resolve_log_file())
         print("ERROR: Missing configuration file in all supported locations.", file=sys.stderr)
         sys.exit(1)
 
+    service_settings = config_data.get(PROGNAME, {})
+    log_filename = resolve_log_file(service_settings.get("log_file"))
+    configure_logging(log_filename)
     spoolman2klipper = Spoolman2Klipper(config_data)
     logging.info(
-        "Starting %s with Moonraker %s and Spoolman API %s",
+        "Starting %s with Moonraker %s and Spoolman API %s; logging to %s",
         PROGNAME,
         spoolman2klipper.moonraker_url,
         spoolman2klipper.spoolman_url,
+        log_filename,
     )
     spoolman2klipper.run()

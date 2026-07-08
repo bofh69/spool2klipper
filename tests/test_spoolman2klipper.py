@@ -8,10 +8,13 @@
 import asyncio
 import io
 import logging
+import re
+import sys
 
 import aiohttp
 import pytest
 
+import spoolman2klipper
 from spoolman2klipper import SPOOL_VARS_DEFAULT, Spoolman2Klipper, load_config
 
 
@@ -203,6 +206,48 @@ def test_extract_spool_variables_uses_defaults_for_missing_nested_data():
     }
 
 
+def test_resolve_log_file_prefers_directory_with_existing_klipper_log(
+    tmp_path, monkeypatch
+):
+    fake_home = tmp_path / "home"
+    logs_dir = fake_home / "klipper_logs"
+    logs_dir.mkdir(parents=True)
+    (logs_dir / "moonraker.log").write_text("existing log\n", encoding="utf-8")
+
+    def fake_expanduser(path):
+        if path.startswith("~/"):
+            return str(fake_home / path[2:])
+        return path
+
+    monkeypatch.setattr("spoolman2klipper.os.path.expanduser", fake_expanduser)
+
+    assert spoolman2klipper.resolve_log_file() == str(
+        logs_dir / "spoolman2klipper.log"
+    )
+
+
+def test_configure_logging_writes_timestamped_log_file(tmp_path):
+    log_file = tmp_path / "spoolman2klipper.log"
+    root_logger = logging.getLogger()
+    original_handlers = root_logger.handlers[:]
+    original_level = root_logger.level
+
+    try:
+        spoolman2klipper.configure_logging(str(log_file), stderr=sys.stderr)
+        logging.info("file logging smoke test")
+    finally:
+        for handler in root_logger.handlers[:]:
+            handler.close()
+            root_logger.removeHandler(handler)
+        for handler in original_handlers:
+            root_logger.addHandler(handler)
+        root_logger.setLevel(original_level)
+
+    log_text = log_file.read_text(encoding="utf-8")
+    assert "INFO file logging smoke test" in log_text
+    assert re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", log_text)
+
+
 def test_format_set_variable_gcode_quotes_string_values():
     service = make_service()
 
@@ -220,6 +265,14 @@ def test_format_set_variable_gcode_leaves_numeric_values_unquoted():
     command = service.format_set_variable_gcode("extruder_temp", 210)
 
     assert command == "SET_GCODE_VARIABLE MACRO=SPOOLMAN VARIABLE=extruder_temp VALUE=210"
+
+
+def test_normalize_macro_variable_name_accepts_klipper_storage_prefix():
+    assert (
+        spoolman2klipper.normalize_macro_variable_name("variable_spool_id")
+        == "spool_id"
+    )
+    assert spoolman2klipper.normalize_macro_variable_name("spool_id") == "spool_id"
 
 
 @pytest.mark.asyncio
@@ -250,6 +303,19 @@ async def test_push_klipper_variables_only_sends_defined_macro_variables():
         "SET_GCODE_VARIABLE MACRO=SPOOLMAN VARIABLE=spool_id VALUE=123",
         'SET_GCODE_VARIABLE MACRO=SPOOLMAN VARIABLE=material VALUE="\'PETG\'"',
     ]
+
+
+@pytest.mark.asyncio
+async def test_push_klipper_variables_warns_when_no_variables_are_sent(caplog):
+    service = make_service(macro_variables={"unrelated"})
+
+    with caplog.at_level(logging.WARNING):
+        await service.push_klipper_variables({"spool_id": 123, "material": "PETG"})
+
+    assert "No Klipper variables were updated for macro SPOOLMAN" in caplog.text
+    assert "spool_id" in caplog.text
+    assert "material" in caplog.text
+    assert "unrelated" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -356,6 +422,29 @@ async def test_spoolman_updated_event_refreshes_active_spool_variables():
 
 
 @pytest.mark.asyncio
+async def test_spoolman_updated_event_matches_active_spool_id_as_string_or_int():
+    service = make_service(macro_variables={"spool_id", "material"})
+    service.active_spool_id = "123"
+
+    await service.handle_spoolman_event(
+        {
+            "resource": "spool",
+            "type": "updated",
+            "payload": {
+                "id": 123,
+                "filament": {"material": "ASA"},
+            },
+        }
+    )
+
+    scripts = [script for script, _notify in service.moonraker_server.printer.gcode.scripts]
+    assert scripts == [
+        "SET_GCODE_VARIABLE MACRO=SPOOLMAN VARIABLE=spool_id VALUE=123",
+        'SET_GCODE_VARIABLE MACRO=SPOOLMAN VARIABLE=material VALUE="\'ASA\'"',
+    ]
+
+
+@pytest.mark.asyncio
 async def test_spoolman_updated_event_logs_active_spool_refresh(caplog):
     service = make_service(macro_variables={"spool_id"})
     service.active_spool_id = 123
@@ -405,6 +494,25 @@ async def test_klippy_ready_redetects_macro_and_repushes_cached_data():
         "SET_GCODE_VARIABLE MACRO=SPOOLMAN VARIABLE=spool_id VALUE=123",
         'SET_GCODE_VARIABLE MACRO=SPOOLMAN VARIABLE=filament_name VALUE="\'PLA+ Black\'"',
     ]
+
+
+@pytest.mark.asyncio
+async def test_detect_macro_variables_normalizes_klipper_storage_prefix():
+    service = make_service(macro_variables=set())
+    service.moonraker_server.printer.objects = FakeObjectsApi(
+        query_result={
+            "status": {
+                "gcode_macro SPOOLMAN": {
+                    "variable_spool_id": -1,
+                    "variable_filament_name": "",
+                }
+            }
+        }
+    )
+
+    await service.detect_macro_variables()
+
+    assert service.macro_variables == {"spool_id", "filament_name"}
 
 
 @pytest.mark.asyncio

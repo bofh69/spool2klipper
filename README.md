@@ -179,11 +179,35 @@ reconnect_delay = 2.0
 
 # HTTP/websocket request timeout in seconds.
 request_timeout = 5.0
+
+# Optional dedicated service log file. Leave commented to auto-detect the
+# Klipper log directory and write ~/printer_data/logs/spoolman2klipper.log.
+# log_file = "~/printer_data/logs/spoolman2klipper.log"
 ```
 
 After modifying the configuration, restart the service to apply changes:
 ```sh
 sudo systemctl restart spoolman2klipper
+```
+
+### Logs
+
+`spoolman2klipper` writes a dedicated timestamped log file to:
+
+```text
+~/printer_data/logs/spoolman2klipper.log
+```
+
+If your printer stores `klippy.log`, `moonraker.log`, or `crowsnest.log` in
+another common log directory, the service writes `spoolman2klipper.log` beside
+those files instead. You can force a specific path with the optional `log_file`
+setting in `spoolman2klipper.cfg`.
+
+The service also keeps writing to stderr for systemd, so older output remains
+available with:
+
+```sh
+journalctl -u spoolman2klipper
 ```
 
 ### 4. Verify the Installation
