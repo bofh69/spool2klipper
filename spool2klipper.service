@@ -5,6 +5,8 @@ Description=Starts spool2klipper
 Documentation=https://github.com/bofh69/spool2klipper
 After=moonraker.service
 Wants=udev.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Install]
 WantedBy=multi-user.target
@@ -12,7 +14,6 @@ WantedBy=multi-user.target
 [Service]
 Type=simple
 User=pi
-RemainAfterExit=yes
-ExecStart= /home/pi/spool2klipper/venv/bin/python3 /home/pi/spool2klipper/spool2klipper.py
-Restart=always
-RestartSec=10
+ExecStart=/home/pi/spool2klipper/venv/bin/python3 /home/pi/spool2klipper/spool2klipper.py
+Restart=on-failure
+RestartSec=15
