@@ -1,11 +1,9 @@
 <!--
-SPDX-FileCopyrightText: 2025 Sebastian Andersson <sebastian@bittr.nu>
+SPDX-FileCopyrightText: 2025 psyfiend
 
 SPDX-License-Identifier: GPL-3.0-or-later
 -->
-
-[![REUSE status](https://api.reuse.software/badge/github.com/bofh69/spool2klipper)](https://api.reuse.software/info/github.com/bofh69/spool2klipper)
-![GitHub Workflow Status](https://github.com/bofh69/spool2klipper/actions/workflows/pylint.yml/badge.svg)
+[![REUSE status](https://api.reuse.software/badge/github.com/psyfiend/spool2klipper)](https://api.reuse.software/info/github.com/psyfiend/spool2klipper)
 
 
 # spool2klipper
@@ -37,7 +35,7 @@ The macro will be called with the argument `VALUE=`_fields-value_ which stores t
 and _fields-value_ into the printer `save_variables`.
 
 When a new spool is loaded, or if the active spool is ejected, this agent will call 
-`_SPOOLMAN_CLEAR_FIELDS` (if available) before storing new fields. This will ensure all previously 
+`_SPOOLMAN_CLEAR_SPOOL` (if available) before storing new fields. This will ensure all previously 
 stored values are cleared in the event there are filaments with empty fields.
 
 After all the macros have been called, a _MSG_ will be sent to the terminal via 
@@ -59,7 +57,7 @@ gcode:
     {action_respond_info("Parameter 'VALUE' is required")}
   {% endif %}
 
-[gcode_macro _SPOOLMAN_CLEAR_FIELDS]
+[gcode_macro _SPOOLMAN_CLEAR_SPOOL]
 description: Removes spool info
 gcode:
     SAVE_VARIABLE VARIABLE=active_filament_id VALUE=None
