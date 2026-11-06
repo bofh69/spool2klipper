@@ -31,6 +31,17 @@ PROGNAME = "spool2klipper"
 CFG_DIR = "~/.config/" + PROGNAME
 CFG_FILE = PROGNAME + ".cfg"
 
+# Reconnection backoff, in seconds. The agent waits instead of exiting when
+# Klipper is not connected yet (e.g. the printer is powered off).
+RETRY_MIN_DELAY = 10
+RETRY_MAX_DELAY = 60
+
+# How often the websocket connection is checked while idle.
+CONNECTION_POLL_INTERVAL = 5
+
+# aiohttp websocket heartbeat; detects dead connections (Moonraker restart).
+WEBSOCKET_HEARTBEAT = 30
+
 
 # pylint: disable=R0902,R0903
 class Spool2Klipper:
@@ -136,34 +147,65 @@ class Spool2Klipper:
             script=script, _notification=True
         )
 
+    async def _connect(self):
+        """Connect to Moonraker and cache the available gcode macros."""
+        self.moonraker_server = Server(
+            self.moonraker_url,
+            session=self.http_session,
+            heartbeat=WEBSOCKET_HEARTBEAT,
+        )
+        await self.moonraker_server.ws_connect()
+
+        objects = await self.moonraker_server.printer.objects.list()
+        self.gcode_macros = [
+            x[12:] for x in objects["objects"] if x.startswith("gcode_macro ")
+        ]
+        logging.debug("Available macros: %s", (self.gcode_macros))
+
+        self.moonraker_server.notify_active_spool_set = (
+            self._notify_active_spool_set
+        )
+
+        logging.info(
+            "Connected to Moonraker, %d gcode macros available",
+            len(self.gcode_macros),
+        )
+
     async def _routine(self):
+        """Keep a live connection, retrying while Klipper is not available."""
+        retry_delay = RETRY_MIN_DELAY
+
         async with aiohttp.ClientSession() as self.http_session:
-            self.moonraker_server = Server(self.moonraker_url)
-            try:
-                await self.moonraker_server.ws_connect()
+            while True:
+                try:
+                    await self._connect()
+                    retry_delay = RETRY_MIN_DELAY
 
-                objects = await self.moonraker_server.printer.objects.list()
-                self.gcode_macros = [
-                    x[12:] for x in objects["objects"] if x.startswith("gcode_macro ")
-                ]
-                logging.debug("Available macros: %s", (self.gcode_macros))
+                    while self.moonraker_server.connected:
+                        await asyncio.sleep(CONNECTION_POLL_INTERVAL)
 
-                self.moonraker_server.notify_active_spool_set = (
-                    self._notify_active_spool_set
-                )
+                    logging.info("Connection to Moonraker lost, reconnecting")
 
-                while True:
-                    await asyncio.sleep(3600)
-            finally:
-                await self.moonraker_server.close()
+                except Exception as exc:  # pylint: disable=broad-except
+                    logging.info(
+                        "Klipper/Moonraker not available (%s); retrying in %d s",
+                        exc,
+                        retry_delay,
+                    )
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, RETRY_MAX_DELAY)
+
+                finally:
+                    if self.moonraker_server is not None:
+                        await self.moonraker_server.close()
 
     def run(self):
         """Run the agent in the async loop"""
-        asyncio.get_event_loop().run_until_complete(self._routine())
+        asyncio.run(self._routine())
 
 
 if __name__ == "__main__":
-    logging.basicConfig(encoding="utf-8", level=logging.DEBUG)
+    logging.basicConfig(encoding="utf-8", level=logging.INFO)
     config_data = None  # pylint: disable=C0103
     for path in ["~/" + CFG_FILE, CFG_DIR + "/" + CFG_FILE]:
         cfg_filename = os.path.expanduser(path)
